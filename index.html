@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>School Route Analyzer</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <script src='https://unpkg.com/@turf/turf@6/turf.min.js'></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        body, html {
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+            height: 100%;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        #app-container {
+            display: flex;
+            flex-direction: row; /* Changed to horizontal layout */
+            height: 100%;
+        }
+        #map-container {
+            flex-basis: 60%; /* Initial width */
+            min-width: 300px;
+        }
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+        #resizer {
+            flex: 0 0 10px; /* Do not grow or shrink, fixed width */
+            background-color: #e5e7eb; /* gray-200 */
+            cursor: ew-resize; /* Changed to east-west resize cursor */
+        }
+        #table-container-wrapper {
+            flex-basis: 40%; /* Initial width */
+            min-width: 400px;
+            overflow-y: hidden; 
+            display: flex;
+            flex-direction: column;
+        }
+        #table-scroll-area {
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+        .table-header-sortable { cursor: pointer; }
+        .table-header-sortable:hover { background-color: #f3f4f6; }
+        .table-row-selected { background-color: #e0f2fe !important; }
+        .loader {
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #3498db;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .filter-input {
+            width: 100%;
+            padding: 4px 8px;
+            font-size: 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 4px;
+        }
+        thead.sticky-header {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div id="app-container">
+        <div id="map-container">
+            <div id="map"></div>
+        </div>
+
+        <div id="resizer"></div>
+
+        <div id="table-container-wrapper" class="bg-white">
+            <div class="p-4 border-b border-gray-200 flex-shrink-0">
+                 <div class="flex justify-between items-center">
+                    <div class="flex items-center space-x-4">
+                        <input type="file" id="file-upload" class="hidden"/>
+                        <label for="file-upload" class="bg-blue-600 text-white px-4 py-2 rounded-md shadow-sm hover:bg-blue-700 cursor-pointer text-sm font-medium">Upload CSV</label>
+                        <button id="show-all-btn" class="bg-gray-200 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-300 text-sm font-medium">Show All Schools</button>
+                        <button id="export-csv-btn" class="bg-green-600 text-white px-4 py-2 rounded-md shadow-sm hover:bg-green-700 cursor-pointer text-sm font-medium">Export to CSV</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="loading-spinner" class="hidden justify-center items-center p-8"><div class="loader"></div></div>
+            <div id="error-message" class="hidden p-4 bg-red-100 text-red-700 rounded-md"></div>
+            
+            <div id="table-scroll-area">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50 sticky-header">
+                        <tr>
+                            <th scope="col" class="table-header-sortable px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" data-sort="name">School Name</th>
+                            <th scope="col" class="table-header-sortable px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" data-sort="pupilCount">Pupils</th>
+                            <th scope="col" class="table-header-sortable px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" data-sort="area25">25% Area (sq mi)</th>
+                            <th scope="col" class="table-header-sortable px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" data-sort="area50">50% Area (sq mi)</th>
+                            <th scope="col" class="table-header-sortable px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" data-sort="area75">75% Area (sq mi)</th>
+                            <th scope="col" class="table-header-sortable px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" data-sort="area100">100% Area (sq mi)</th>
+                        </tr>
+                        <tr>
+                           <th class="px-2 py-1 bg-white"><input type="text" class="filter-input" data-filter="name" placeholder="Filter..."></th>
+                           <th class="px-2 py-1 bg-white"><input type="text" class="filter-input" data-filter="pupilCount" placeholder="e.g. >50"></th>
+                           <th class="px-2 py-1 bg-white"><input type="text" class="filter-input" data-filter="area25" placeholder="e.g. <10"></th>
+                           <th class="px-2 py-1 bg-white"><input type="text" class="filter-input" data-filter="area50" placeholder="Filter..."></th>
+                           <th class="px-2 py-1 bg-white"><input type="text" class="filter-input" data-filter="area75" placeholder="Filter..."></th>
+                           <th class="px-2 py-1 bg-white"><input type="text" class="filter-input" data-filter="area100" placeholder="Filter..."></th>
+                        </tr>
+                        <tr class="bg-gray-100">
+                            <th class="px-6 py-2 text-left text-xs font-bold text-gray-600">Stats</th>
+                            <th id="pupilCount-stats" class="px-6 py-2 text-left text-xs font-semibold text-gray-500"></th>
+                            <th id="area25-stats" class="px-6 py-2 text-left text-xs font-semibold text-gray-500"></th>
+                            <th id="area50-stats" class="px-6 py-2 text-left text-xs font-semibold text-gray-500"></th>
+                            <th id="area75-stats" class="px-6 py-2 text-left text-xs font-semibold text-gray-500"></th>
+                            <th id="area100-stats" class="px-6 py-2 text-left text-xs font-semibold text-gray-500"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="school-table-body" class="bg-white divide-y divide-gray-200">
+                        <!-- Table rows will be injected here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- INITIALIZATION ---
+        const mapboxAccessToken = 'pk.eyJ1IjoidnIwMG4tbnljc2J1cyIsImEiOiJjbDViczI0NmMwMW42M2JwYmdubmUwOGJ3In0.YroblDcHdFwFXo38QL0vxQ';
+        const SQ_METERS_TO_SQ_MILES = 0.000000386102;
+        
+        let processedSchools = [];
+        let currentSort = { key: 'pupilCount', order: 'desc' };
+        let currentFilters = {};
+        let displayedData = [];
+
+        // DOM Elements
+        const fileUpload = document.getElementById('file-upload');
+        const showAllBtn = document.getElementById('show-all-btn');
+        const exportCsvBtn = document.getElementById('export-csv-btn');
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const errorMessageDiv = document.getElementById('error-message');
+        const tableBody = document.getElementById('school-table-body');
+
+        // Map setup
+        const map = L.map('map').setView([40.7128, -74.0060], 10);
+        L.tileLayer('https://api.mapbox.com/styles/v1/{id}/tiles/{z}/{x}/{y}?access_token={accessToken}', {
+            attribution: 'Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, Imagery © <a href="https://www.mapbox.com/">Mapbox</a>',
+            maxZoom: 18, id: 'mapbox/streets-v11', tileSize: 512, zoomOffset: -1, accessToken: mapboxAccessToken
+        }).addTo(map);
+        
+        const spiderLayer = L.layerGroup().addTo(map);
+        const marketShareLayer = L.layerGroup().addTo(map);
+        const schoolMarkersLayer = L.layerGroup().addTo(map);
+        L.control.layers(null, {"Schools": schoolMarkersLayer, "Spider Diagram": spiderLayer, "Market Share": marketShareLayer}).addTo(map);
+
+        // --- EVENT LISTENERS ---
+        fileUpload.addEventListener('change', handleFileUpload);
+        showAllBtn.addEventListener('click', () => {
+             displaySchoolsOnMap(processedSchools);
+             currentFilters = {};
+             document.querySelectorAll('.filter-input').forEach(i => i.value = '');
+             applyFiltersAndRender();
+        });
+        exportCsvBtn.addEventListener('click', exportToCSV);
+        document.querySelectorAll('.table-header-sortable').forEach(header => header.addEventListener('click', handleSort));
+        document.querySelectorAll('.filter-input').forEach(input => input.addEventListener('input', handleFilter));
+        
+        // Resizer functionality
+        const resizer = document.getElementById('resizer');
+        const mapContainer = document.getElementById('map-container');
+        const tableContainer = document.getElementById('table-container-wrapper');
+
+        resizer.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+        });
+
+        function onMouseMove(e) {
+            const containerRect = document.getElementById('app-container').getBoundingClientRect();
+            const newMapWidth = e.clientX - containerRect.left;
+            const newTableWidth = containerRect.width - newMapWidth - resizer.offsetWidth;
+
+            if (newMapWidth > 300 && newTableWidth > 400) {
+                mapContainer.style.flexBasis = `${newMapWidth}px`;
+                tableContainer.style.flexBasis = `${newTableWidth}px`;
+            }
+        }
+
+        function onMouseUp() {
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            map.invalidateSize();
+        }
+
+        // --- DATA PROCESSING ---
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            resetUI();
+            loadingSpinner.style.display = 'flex';
+            
+            Papa.parse(file, {
+                header: true, skipEmptyLines: true,
+                complete: (results) => processData(results.data),
+                error: (err) => showError("Failed to parse CSV file: " + err.message)
+            });
+        }
+
+        function processData(data) {
+            let schools = {};
+            data.forEach(row => {
+                if (!row.Seg_No || parseInt(row.Seg_No, 10) === 0) return;
+                const schoolName = row['School_Code_&_Name']?.trim();
+                const schoolLat = parseFloat(row.school_lat);
+                const schoolLon = parseFloat(row.school_lon);
+                if (!schoolName || isNaN(schoolLat) || isNaN(schoolLon) || isNaN(parseFloat(row.pupil_lat)) || isNaN(parseFloat(row.pupil_lon))) return;
+                
+                if (!schools[schoolName]) schools[schoolName] = { name: schoolName, location: { lat: schoolLat, lon: schoolLon }, pupils: [] };
+                schools[schoolName].pupils.push({ lat: parseFloat(row.pupil_lat), lon: parseFloat(row.pupil_lon) });
+            });
+
+            if (Object.keys(schools).length === 0) { showError("No valid pickup data found."); return; }
+
+            processedSchools = Object.values(schools).map(school => ({ ...school, pupilCount: school.pupils.length, ...calculateMarketShareAreas(school) }));
+            applyFiltersAndRender();
+            displaySchoolsOnMap(processedSchools);
+            loadingSpinner.style.display = 'none';
+        }
+        
+        // --- TABLE & UI LOGIC ---
+        function handleFilter(e) {
+            const key = e.target.dataset.filter;
+            const value = e.target.value;
+            if (value) currentFilters[key] = value;
+            else delete currentFilters[key];
+            applyFiltersAndRender();
+        }
+        
+        function applyFiltersAndRender() {
+            let filtered = [...processedSchools];
+            
+            Object.entries(currentFilters).forEach(([key, value]) => {
+                const filterValue = value.toLowerCase();
+                const opMatch = filterValue.match(/([<>]=?|=)\s*(\d*\.?\d+)/);
+                if (opMatch) {
+                    const operator = opMatch[1];
+                    const number = parseFloat(opMatch[2]);
+                    if (!isNaN(number)) {
+                        filtered = filtered.filter(school => {
+                            if (operator === '>' || operator === '>=') return school[key] >= number;
+                            if (operator === '<' || operator === '<=') return school[key] <= number;
+                            if (operator === '=') return school[key] == number;
+                        });
+                    }
+                } else {
+                     filtered = filtered.filter(school => school[key].toString().toLowerCase().includes(filterValue));
+                }
+            });
+
+            sortData(filtered);
+            displayedData = filtered;
+            renderTable(filtered);
+            calculateAndDisplayStats(filtered);
+        }
+
+        function handleSort(e) {
+            const key = e.target.closest('[data-sort]').dataset.sort;
+            if (currentSort.key === key) currentSort.order = currentSort.order === 'asc' ? 'desc' : 'asc';
+            else { currentSort.key = key; currentSort.order = 'asc'; }
+            applyFiltersAndRender();
+        }
+
+        function sortData(data) {
+            data.sort((a, b) => {
+                const valA = a[currentSort.key];
+                const valB = b[currentSort.key];
+                if(typeof valA === 'string') return currentSort.order === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+                return currentSort.order === 'asc' ? valA - valB : valB - valA;
+            });
+        }
+
+        function renderTable(schoolsToRender) {
+            tableBody.innerHTML = schoolsToRender.length === 0 
+                ? `<tr><td colspan="6" class="text-center text-gray-500 py-4">No schools found for current filters.</td></tr>`
+                : schoolsToRender.map(school => `
+                    <tr class="cursor-pointer hover:bg-gray-50" data-school-name="${school.name}">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${school.name}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${school.pupilCount}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${school.area25.toFixed(2)}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${school.area50.toFixed(2)}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${school.area75.toFixed(2)}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${school.area100.toFixed(2)}</td>
+                    </tr>
+                `).join('');
+            
+            tableBody.querySelectorAll('tr[data-school-name]').forEach(row => {
+                row.addEventListener('click', () => {
+                    const school = processedSchools.find(s => s.name === row.dataset.schoolName);
+                    if (school) {
+                        displaySchoolsOnMap([school]);
+                        document.querySelectorAll('#school-table-body tr').forEach(r => r.classList.remove('table-row-selected'));
+                        row.classList.add('table-row-selected');
+                    }
+                });
+            });
+        }
+        
+        function calculateAndDisplayStats(data) {
+            const statKeys = ['pupilCount', 'area25', 'area50', 'area75', 'area100'];
+            const count = data.length;
+
+            if (count === 0) {
+                statKeys.forEach(key => { document.getElementById(`${key}-stats`).innerHTML = ''; });
+                return;
+            }
+
+            statKeys.forEach(key => {
+                const sum = data.reduce((acc, school) => acc + school[key], 0);
+                const mean = sum / count;
+                const statsCell = document.getElementById(`${key}-stats`);
+                statsCell.innerHTML = `
+                    <div class="flex flex-col text-right">
+                        <span><span class="font-normal">Total:</span> ${sum.toLocaleString(undefined, {maximumFractionDigits: 0})}</span>
+                        <span><span class="font-normal">Mean:</span> ${mean.toLocaleString(undefined, {maximumFractionDigits: 2})}</span>
+                    </div>
+                `;
+            });
+        }
+
+
+        function exportToCSV() {
+            const headers = ['School Name', 'Pupils', '25% Area (sq mi)', '50% Area (sq mi)', '75% Area (sq mi)', '100% Area (sq mi)'];
+            const rows = displayedData.map(school => [
+                `"${school.name.replace(/"/g, '""')}"`, school.pupilCount, school.area25.toFixed(2), school.area50.toFixed(2), school.area75.toFixed(2), school.area100.toFixed(2)
+            ].join(','));
+            const csvContent = "data:text/csv;charset=utf-8," + [headers.join(','), ...rows].join('\n');
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", "school_metrics.csv");
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+        
+        // --- MAP VISUALIZATION & CALCS ---
+        function displaySchoolsOnMap(schoolsToDisplay) {
+            clearMapLayers();
+            const allPoints = [];
+            let minPupils = processedSchools.length > 0 ? Math.min(...processedSchools.map(s => s.pupilCount)) : 0;
+            let maxPupils = processedSchools.length > 0 ? Math.max(...processedSchools.map(s => s.pupilCount)) : 0;
+
+            schoolsToDisplay.forEach(school => {
+                const color = getColorForCount(school.pupilCount, minPupils, maxPupils);
+                school.pupils.forEach(p => allPoints.push([p.lat, p.lon]));
+                createSchoolMarker(school, color);
+                createSpiderDiagram(school);
+                createMarketSharePolygons(school);
+            });
+            
+            if (allPoints.length > 0) map.fitBounds(allPoints, { padding: [50, 50], maxZoom: 14 });
+            else if (schoolsToDisplay.length === 1) map.setView([schoolsToDisplay[0].location.lat, schoolsToDisplay[0].location.lon], 14);
+        }
+
+        function calculateMarketShareAreas(school) {
+            const areas = { area25: 0, area50: 0, area75: 0, area100: 0 };
+            if (school.pupils.length < 3) return areas;
+            const schoolPoint = turf.point([school.location.lon, school.location.lat]);
+            const pupilsWithDist = school.pupils.map(p => ({ ...p, distance: turf.distance(schoolPoint, turf.point([p.lon, p.lat])) })).sort((a, b) => a.distance - b.distance);
+            
+            const quartiles = { area100: 1.00, area75: 0.75, area50: 0.50, area25: 0.25 };
+            for(const key in quartiles) {
+                const pupilSubset = pupilsWithDist.slice(0, Math.ceil(pupilsWithDist.length * quartiles[key]));
+                 if (pupilSubset.length < 3) continue;
+                 const hull = turf.convex(turf.featureCollection(pupilSubset.map(p => turf.point([p.lon, p.lat]))));
+                 if(hull) areas[key] = turf.area(hull) * SQ_METERS_TO_SQ_MILES;
+            }
+            return areas;
+        }
+
+        function createMarketSharePolygons(school) {
+            if (school.pupils.length < 4) return;
+            const schoolPoint = turf.point([school.location.lon, school.location.lat]);
+            const pupilsWithDist = school.pupils.map(p => ({ ...p, distance: turf.distance(schoolPoint, turf.point([p.lon, p.lat])) })).sort((a, b) => a.distance - b.distance);
+            
+            const quartiles = [1.00, 0.75, 0.50, 0.25];
+            const tempColors = ['#a6d96a', '#fee08b', '#fdae61', '#d73027']; 
+
+            quartiles.forEach((quartile, i) => {
+                const pupilSubset = pupilsWithDist.slice(0, Math.ceil(pupilsWithDist.length * quartile));
+                if (pupilSubset.length < 3) return;
+                const hull = turf.convex(turf.featureCollection(pupilSubset.map(p => turf.point([p.lon, p.lat]))));
+                if (hull) {
+                    const popupText = `<b>${school.name}</b><br>${quartile*100}% Market Share<br>(${pupilSubset.length} pupils)`;
+                    L.geoJSON(hull, { style: { color: tempColors[i], weight: 2, opacity: 0.7, fillColor: tempColors[i], fillOpacity: 0.4 } })
+                     .bindPopup(popupText).addTo(marketShareLayer);
+                }
+            });
+        }
+
+        function createSchoolMarker(school, color) {
+            L.circleMarker([school.location.lat, school.location.lon], { radius: 8, fillColor: color, color: '#000', weight: 1, opacity: 1, fillOpacity: 0.9 })
+             .bindPopup(`<b>${school.name}</b><br>${school.pupilCount} pupils`).addTo(schoolMarkersLayer);
+        }
+        
+        function createSpiderDiagram(school) {
+            school.pupils.forEach(pupil => {
+                L.polyline([[school.location.lat, school.location.lon], [pupil.lat, pupil.lon]], { color: '#555555', weight: 1.5, opacity: 0.7 })
+                 .bindPopup(`Route to ${school.name}`).addTo(spiderLayer);
+            });
+        }
+        
+        function getColorForCount(count, min, max) {
+            if (min === max) return 'hsl(120, 80%, 60%)';
+            const normalized = (count - min) / (max - min);
+            return `hsl(${120 * (1 - normalized)}, 80%, 60%)`;
+        }
+
+        function clearMapLayers() { [spiderLayer, marketShareLayer, schoolMarkersLayer].forEach(layer => layer.clearLayers()); }
+        function resetUI() { clearMapLayers(); tableBody.innerHTML = ''; errorMessageDiv.style.display = 'none'; processedSchools = []; }
+        function showError(message) { errorMessageDiv.textContent = message; errorMessageDiv.style.display = 'block'; loadingSpinner.style.display = 'none'; }
+
+    </script>
+</body>
+</html>
